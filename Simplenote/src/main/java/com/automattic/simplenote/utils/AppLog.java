@@ -24,14 +24,15 @@ public class AppLog {
         LAYOUT,
         NETWORK,
         SCREEN,
-        SYNC
+        SYNC,
+        IMPORT
     }
 
     public static void add(Type type, String message) {
         String log;
 
         if (type == Type.ACCOUNT || type == Type.DEVICE) {
-            log = message;
+            log = message + "\n";
         } else {
             String timestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(new Date());
             log = timestamp + " - " + type.toString() + ": " + message + "\n";

@@ -2,6 +2,7 @@ package com.automattic.simplenote;
 
 import android.app.Activity;
 import android.app.Fragment;
+import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.net.Uri;
@@ -13,6 +14,8 @@ import android.widget.Toast;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.view.ContextThemeWrapper;
 import androidx.core.app.ShareCompat;
+import androidx.core.content.ContextCompat;
+import androidx.fragment.app.FragmentActivity;
 import androidx.preference.ListPreference;
 import androidx.preference.Preference;
 import androidx.preference.PreferenceFragmentCompat;
@@ -22,14 +25,19 @@ import com.automattic.simplenote.analytics.AnalyticsTracker;
 import com.automattic.simplenote.authentication.SimplenoteAuthenticationActivity;
 import com.automattic.simplenote.models.Note;
 import com.automattic.simplenote.models.Preferences;
+import com.automattic.simplenote.utils.AccountNetworkUtils;
+import com.automattic.simplenote.utils.AccountNetworkUtils.DeleteAccountRequestHandler;
 import com.automattic.simplenote.utils.AppLog;
 import com.automattic.simplenote.utils.AppLog.Type;
 import com.automattic.simplenote.utils.AuthUtils;
 import com.automattic.simplenote.utils.BrowserUtils;
 import com.automattic.simplenote.utils.CrashUtils;
+import com.automattic.simplenote.utils.DialogUtils;
 import com.automattic.simplenote.utils.HtmlCompat;
 import com.automattic.simplenote.utils.PrefUtils;
+import com.automattic.simplenote.utils.SimplenoteProgressDialogFragment;
 import com.simperium.Simperium;
+import com.simperium.android.ProgressDialogFragment;
 import com.simperium.client.Bucket;
 import com.simperium.client.BucketObjectMissingException;
 import com.simperium.client.BucketObjectNameInvalid;
@@ -67,9 +75,11 @@ public class PreferencesFragment extends PreferenceFragmentCompat implements Use
 
     private static final int REQUEST_EXPORT_DATA = 9001;
     private static final int REQUEST_EXPORT_UNSYNCED = 9002;
+    private static final int REQUEST_IMPORT_DATA = 9003;
 
     private Bucket<Preferences> mPreferencesBucket;
     private SwitchPreferenceCompat mAnalyticsSwitch;
+    private SimplenoteProgressDialogFragment mProgressDialogFragment;
 
     public PreferencesFragment() {
         // Required empty public constructor
@@ -116,13 +126,28 @@ public class PreferencesFragment extends PreferenceFragmentCompat implements Use
             }
         });
 
+        Preference deleteAppPreference = findPreference("pref_key_delete_account");
+        deleteAppPreference.setOnPreferenceClickListener(new Preference.OnPreferenceClickListener() {
+            @Override
+            public boolean onPreferenceClick(Preference preference) {
+                AnalyticsTracker.track(
+                        AnalyticsTracker.Stat.USER_ACCOUNT_DELETE_REQUESTED,
+                        AnalyticsTracker.CATEGORY_USER,
+                        "preferences_delete_account_button"
+                );
+
+                showDeleteAccountDialog();
+                return true;
+            }
+        });
+
         findPreference("pref_key_help").setOnPreferenceClickListener(new Preference.OnPreferenceClickListener() {
             @Override
             public boolean onPreferenceClick(Preference preference) {
                 try {
                     BrowserUtils.launchBrowserOrShowError(requireContext(), "https://simplenote.com/help");
                 } catch (Exception e) {
-                    Toast.makeText(getActivity(), R.string.no_browser_available, Toast.LENGTH_LONG).show();
+                    toast(R.string.no_browser_available, Toast.LENGTH_LONG);
                 }
                 return true;
             }
@@ -134,7 +159,7 @@ public class PreferencesFragment extends PreferenceFragmentCompat implements Use
                 try {
                     BrowserUtils.launchBrowserOrShowError(requireContext(), "http://simplenote.com");
                 } catch (Exception e) {
-                    Toast.makeText(getActivity(), R.string.no_browser_available, Toast.LENGTH_LONG).show();
+                    toast(R.string.no_browser_available, Toast.LENGTH_LONG);
                 }
                 return true;
             }
@@ -144,6 +169,24 @@ public class PreferencesFragment extends PreferenceFragmentCompat implements Use
             @Override
             public boolean onPreferenceClick(Preference preference) {
                 startActivity(new Intent(getActivity(), AboutActivity.class));
+                return true;
+            }
+        });
+
+        findPreference("pref_key_import").setOnPreferenceClickListener(new Preference.OnPreferenceClickListener() {
+            @Override
+            public boolean onPreferenceClick(Preference preference) {
+                AnalyticsTracker.track(
+                        AnalyticsTracker.Stat.SETTINGS_IMPORT_NOTES,
+                        AnalyticsTracker.CATEGORY_NOTE,
+                        "preferences_import_data_button"
+                );
+
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("*/*");
+                intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"text/*", "application/json"});
+                startActivityForResult(intent, REQUEST_IMPORT_DATA);
                 return true;
             }
         });
@@ -304,6 +347,127 @@ public class PreferencesFragment extends PreferenceFragmentCompat implements Use
         });
     }
 
+    private void showProgressDialogDeleteAccount() {
+        FragmentActivity activity = getActivity();
+        if (activity == null) {
+            return;
+        }
+
+        mProgressDialogFragment = SimplenoteProgressDialogFragment.newInstance(getString(R.string.requesting_message));
+        mProgressDialogFragment.show(activity.getSupportFragmentManager(), ProgressDialogFragment.TAG);
+    }
+
+    private void closeProgressDialogDeleteAccount() {
+        if (mProgressDialogFragment != null && !mProgressDialogFragment.isHidden()) {
+            mProgressDialogFragment.dismiss();
+            mProgressDialogFragment = null;
+        }
+    }
+
+    private void showDeleteAccountDialog() {
+        Context context = getContext();
+        if (context == null) {
+            return;
+        }
+
+        final DeleteAccountRequestHandler deleteAccountHandler = new DeleteAccountRequestHandlerImpl(this);
+
+        final AlertDialog dialogDeleteAccount = new AlertDialog.Builder(new ContextThemeWrapper(context, R.style.Dialog))
+                .setTitle(R.string.delete_account)
+                .setMessage(R.string.delete_account_message)
+                .setPositiveButton(R.string.delete_account, new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface dialogInterface, int i) {
+                            FragmentActivity activity = getActivity();
+                            if (activity == null) {
+                                return;
+                            }
+
+                            showProgressDialogDeleteAccount();
+
+                            Simplenote currentApp = (Simplenote) activity.getApplication();
+                            Simperium simperium = currentApp.getSimperium();
+                            String userEmail = simperium.getUser().getEmail();
+                            String userToken = simperium.getUser().getAccessToken();
+
+                            // makeDeleteAccountRequest can throw an exception when it cannot build
+                            // the JSON object. In those cases, we show the error dialog since
+                            // it can be related to memory constraints or something else that is
+                            // just a transient fault
+                            try {
+                                AppLog.add(Type.ACCOUNT, "Making request to delete account");
+
+                                AccountNetworkUtils.makeDeleteAccountRequest(
+                                        userEmail,
+                                        userToken,
+                                        deleteAccountHandler);
+                            } catch (IllegalArgumentException exception) {
+                                AppLog.add(Type.ACCOUNT, "Error trying to make request " +
+                                        "to delete account. Error: " + exception.getMessage());
+
+                                showDialogDeleteAccountError();
+                            }
+                        }
+                    }
+                )
+                .setNegativeButton(R.string.cancel, null)
+                .create();
+
+        dialogDeleteAccount.setOnShowListener(new DialogInterface.OnShowListener() {
+            @Override
+            public void onShow(DialogInterface dialog) {
+                FragmentActivity activity = getActivity();
+                if (activity == null) {
+                    return;
+                }
+
+                int colorRed = ContextCompat.getColor(activity, R.color.text_button_red);
+                dialogDeleteAccount
+                        .getButton(AlertDialog.BUTTON_POSITIVE)
+                        .setTextColor(colorRed);
+            }
+        });
+        dialogDeleteAccount.show();
+    }
+
+    private void showDialogDeleteAccountError() {
+        Context context = getContext();
+        if (context == null) {
+            return;
+        }
+
+        DialogUtils.showDialogWithEmail(
+                context,
+                getString(R.string.error_ocurred_message)
+        );
+    }
+
+    private void showDeleteAccountConfirmationDialog() {
+        FragmentActivity activity = getActivity();
+        if (activity == null) {
+            return;
+        }
+
+        Simplenote currentApp = (Simplenote) activity.getApplication();
+        Simperium simperium = currentApp.getSimperium();
+        String userEmail = simperium.getUser().getEmail();
+
+        AlertDialog dialogDeleteAccountConfirmation = new AlertDialog.Builder(
+                new ContextThemeWrapper(activity, R.style.Dialog))
+                .setTitle(R.string.request_received)
+                .setMessage(getString(R.string.account_deletion_message, userEmail))
+                .setPositiveButton(android.R.string.ok, new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface dialogInterface, int i) {
+                                dialogInterface.dismiss();
+                            }
+                        }
+                )
+                .create();
+
+        dialogDeleteAccountConfirmation.show();
+    }
+
     @Override
     public void onActivityResult(int requestCode, int resultCode, Intent resultData) {
         if (resultCode != RESULT_OK || resultData == null) {
@@ -311,7 +475,7 @@ public class PreferencesFragment extends PreferenceFragmentCompat implements Use
         }
 
         if (resultData.getData() == null) {
-            Toast.makeText(requireContext(), getString(R.string.export_message_failure), Toast.LENGTH_SHORT).show();
+            toast(R.string.export_message_failure);
             return;
         }
 
@@ -321,6 +485,9 @@ public class PreferencesFragment extends PreferenceFragmentCompat implements Use
                 break;
             case REQUEST_EXPORT_UNSYNCED:
                 exportData(resultData.getData(), true);
+                break;
+            case REQUEST_IMPORT_DATA:
+                importData(resultData.getData());
                 break;
         }
     }
@@ -448,12 +615,47 @@ public class PreferencesFragment extends PreferenceFragmentCompat implements Use
                 FileOutputStream fileOutputStream = new FileOutputStream(parcelFileDescriptor.getFileDescriptor());
                 fileOutputStream.write(account.toString(2).replace("\\/","/").getBytes());
                 parcelFileDescriptor.close();
-                Toast.makeText(requireContext(), getString(R.string.export_message_success), Toast.LENGTH_SHORT).show();
+                toast(R.string.export_message_success);
             } else {
-                Toast.makeText(requireContext(), getString(R.string.export_message_failure), Toast.LENGTH_SHORT).show();
+                toast(R.string.export_message_failure);
             }
         } catch (Exception e) {
-            Toast.makeText(requireContext(), getString(R.string.export_message_failure), Toast.LENGTH_SHORT).show();
+            toast(R.string.export_message_failure);
+        }
+    }
+
+    private void importData(Uri uri) {
+        try {
+            AppLog.add(Type.IMPORT, "Importing notes from " + uri + ".");
+
+            FragmentActivity activity = getActivity();
+            if (activity == null) {
+                AppLog.add(Type.IMPORT, "Could not import notes since activity is null");
+                return;
+            }
+
+            Importer.fromUri(activity, uri);
+            toast(R.string.import_message_success);
+
+            AppLog.add(Type.IMPORT, "Notes imported correctly!");
+        } catch (Importer.ImportException e) {
+            switch (e.getReason()) {
+                case FileError:
+                    AppLog.add(Type.IMPORT, "File error while importing note. Exception: " + e.getMessage());
+
+                    toast(R.string.import_error_file);
+                    break;
+                case ParseError:
+                    AppLog.add(Type.IMPORT, "Parse error while importing note. Exception: " + e.getMessage());
+
+                    toast(R.string.import_error_parse);
+                    break;
+                case UnknownExportType:
+                    AppLog.add(Type.IMPORT, "Unknown error while importing note. Exception: " + e.getMessage());
+
+                    toast(R.string.import_unknown);
+                    break;
+            }
         }
     }
 
@@ -532,6 +734,78 @@ public class PreferencesFragment extends PreferenceFragmentCompat implements Use
             } else {
                 fragment.logOut();
             }
+        }
+    }
+  
+    private void toast(int stringId) {
+        toast(stringId, Toast.LENGTH_SHORT);
+    }
+
+    private void toast(int stringId, int length) {
+        Toast.makeText(requireContext(), getString(stringId), length).show();
+    }
+
+    static class DeleteAccountRequestHandlerImpl implements DeleteAccountRequestHandler {
+        final WeakReference<PreferencesFragment> preferencesFragment;
+
+        DeleteAccountRequestHandlerImpl(PreferencesFragment fragment) {
+            this.preferencesFragment = new WeakReference<>(fragment);
+        }
+
+        @Override
+        public void onSuccess() {
+            final PreferencesFragment fragment = preferencesFragment.get();
+            if (fragment == null) {
+                return;
+            }
+
+            FragmentActivity activity = fragment.getActivity();
+            if (activity == null) {
+                return;
+            }
+
+            AppLog.add(Type.ACCOUNT, "Request to delete account was successful");
+            AnalyticsTracker.track(
+                    AnalyticsTracker.Stat.USER_ACCOUNT_DELETE_REQUESTED,
+                    AnalyticsTracker.CATEGORY_USER,
+                    "delete_account_request_success"
+            );
+
+            activity.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    fragment.closeProgressDialogDeleteAccount();
+                    fragment.showDeleteAccountConfirmationDialog();
+                }
+            });
+        }
+
+        @Override
+        public void onFailure() {
+            final PreferencesFragment fragment = preferencesFragment.get();
+            if (fragment == null) {
+                return;
+            }
+
+            FragmentActivity activity = fragment.getActivity();
+            if (activity == null) {
+                return;
+            }
+
+            AppLog.add(Type.ACCOUNT, "Failure while calling server to delete account");
+            AnalyticsTracker.track(
+                    AnalyticsTracker.Stat.USER_ACCOUNT_DELETE_REQUESTED,
+                    AnalyticsTracker.CATEGORY_USER,
+                    "delete_account_request_failure"
+            );
+
+            activity.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    fragment.closeProgressDialogDeleteAccount();
+                    fragment.showDialogDeleteAccountError();
+                }
+            });
         }
     }
 }
