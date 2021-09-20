@@ -1,5 +1,20 @@
 package com.automattic.simplenote;
 
+import static android.app.Activity.RESULT_OK;
+import static com.automattic.simplenote.models.Preferences.PREFERENCES_OBJECT_KEY;
+import static com.automattic.simplenote.utils.PrefUtils.ALPHABETICAL_ASCENDING;
+import static com.automattic.simplenote.utils.PrefUtils.ALPHABETICAL_ASCENDING_LABEL;
+import static com.automattic.simplenote.utils.PrefUtils.ALPHABETICAL_DESCENDING;
+import static com.automattic.simplenote.utils.PrefUtils.ALPHABETICAL_DESCENDING_LABEL;
+import static com.automattic.simplenote.utils.PrefUtils.DATE_CREATED_ASCENDING;
+import static com.automattic.simplenote.utils.PrefUtils.DATE_CREATED_ASCENDING_LABEL;
+import static com.automattic.simplenote.utils.PrefUtils.DATE_CREATED_DESCENDING;
+import static com.automattic.simplenote.utils.PrefUtils.DATE_CREATED_DESCENDING_LABEL;
+import static com.automattic.simplenote.utils.PrefUtils.DATE_MODIFIED_ASCENDING;
+import static com.automattic.simplenote.utils.PrefUtils.DATE_MODIFIED_ASCENDING_LABEL;
+import static com.automattic.simplenote.utils.PrefUtils.DATE_MODIFIED_DESCENDING;
+import static com.automattic.simplenote.utils.PrefUtils.DATE_MODIFIED_DESCENDING_LABEL;
+
 import android.app.Activity;
 import android.app.Fragment;
 import android.content.Context;
@@ -26,14 +41,15 @@ import com.automattic.simplenote.authentication.SimplenoteAuthenticationActivity
 import com.automattic.simplenote.models.Note;
 import com.automattic.simplenote.models.Preferences;
 import com.automattic.simplenote.utils.AccountNetworkUtils;
-import com.automattic.simplenote.utils.AccountNetworkUtils.DeleteAccountRequestHandler;
 import com.automattic.simplenote.utils.AppLog;
 import com.automattic.simplenote.utils.AppLog.Type;
 import com.automattic.simplenote.utils.AuthUtils;
 import com.automattic.simplenote.utils.BrowserUtils;
 import com.automattic.simplenote.utils.CrashUtils;
+import com.automattic.simplenote.utils.DeleteAccountRequestHandler;
 import com.automattic.simplenote.utils.DialogUtils;
 import com.automattic.simplenote.utils.HtmlCompat;
+import com.automattic.simplenote.utils.NetworkUtils;
 import com.automattic.simplenote.utils.PrefUtils;
 import com.automattic.simplenote.utils.SimplenoteProgressDialogFragment;
 import com.simperium.Simperium;
@@ -51,21 +67,6 @@ import java.lang.ref.WeakReference;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
-
-import static android.app.Activity.RESULT_OK;
-import static com.automattic.simplenote.models.Preferences.PREFERENCES_OBJECT_KEY;
-import static com.automattic.simplenote.utils.PrefUtils.ALPHABETICAL_ASCENDING;
-import static com.automattic.simplenote.utils.PrefUtils.ALPHABETICAL_ASCENDING_LABEL;
-import static com.automattic.simplenote.utils.PrefUtils.ALPHABETICAL_DESCENDING;
-import static com.automattic.simplenote.utils.PrefUtils.ALPHABETICAL_DESCENDING_LABEL;
-import static com.automattic.simplenote.utils.PrefUtils.DATE_CREATED_ASCENDING;
-import static com.automattic.simplenote.utils.PrefUtils.DATE_CREATED_ASCENDING_LABEL;
-import static com.automattic.simplenote.utils.PrefUtils.DATE_CREATED_DESCENDING;
-import static com.automattic.simplenote.utils.PrefUtils.DATE_CREATED_DESCENDING_LABEL;
-import static com.automattic.simplenote.utils.PrefUtils.DATE_MODIFIED_ASCENDING;
-import static com.automattic.simplenote.utils.PrefUtils.DATE_MODIFIED_ASCENDING_LABEL;
-import static com.automattic.simplenote.utils.PrefUtils.DATE_MODIFIED_DESCENDING;
-import static com.automattic.simplenote.utils.PrefUtils.DATE_MODIFIED_DESCENDING_LABEL;
 
 /**
  * A simple {@link Fragment} subclass.
@@ -372,9 +373,12 @@ public class PreferencesFragment extends PreferenceFragmentCompat implements Use
 
         final DeleteAccountRequestHandler deleteAccountHandler = new DeleteAccountRequestHandlerImpl(this);
 
+        Simplenote currentApp = (Simplenote) requireActivity().getApplication();
+        Simperium simperium = currentApp.getSimperium();
+        String userEmail = simperium.getUser().getEmail();
         final AlertDialog dialogDeleteAccount = new AlertDialog.Builder(new ContextThemeWrapper(context, R.style.Dialog))
                 .setTitle(R.string.delete_account)
-                .setMessage(R.string.delete_account_message)
+                .setMessage(getString(R.string.delete_account_email_message, userEmail))
                 .setPositiveButton(R.string.delete_account, new DialogInterface.OnClickListener() {
                         @Override
                         public void onClick(DialogInterface dialogInterface, int i) {
@@ -385,26 +389,28 @@ public class PreferencesFragment extends PreferenceFragmentCompat implements Use
 
                             showProgressDialogDeleteAccount();
 
-                            Simplenote currentApp = (Simplenote) activity.getApplication();
-                            Simperium simperium = currentApp.getSimperium();
-                            String userEmail = simperium.getUser().getEmail();
-                            String userToken = simperium.getUser().getAccessToken();
-
                             // makeDeleteAccountRequest can throw an exception when it cannot build
                             // the JSON object. In those cases, we show the error dialog since
                             // it can be related to memory constraints or something else that is
                             // just a transient fault
                             try {
-                                AppLog.add(Type.ACCOUNT, "Making request to delete account");
+                                if (NetworkUtils.isNetworkAvailable(requireContext())) {
+                                    AppLog.add(Type.ACCOUNT, "Making request to delete account");
+                                    String userToken = simperium.getUser().getAccessToken();
+                                    AccountNetworkUtils.makeDeleteAccountRequest(
+                                            userEmail,
+                                            userToken,
+                                            deleteAccountHandler);
+                                } else {
+                                    AppLog.add(Type.ACCOUNT, "No connectivity to make request to delete account");
+                                    closeProgressDialogDeleteAccount();
+                                    showDialogDeleteAccountNoConnectivity();
+                                }
 
-                                AccountNetworkUtils.makeDeleteAccountRequest(
-                                        userEmail,
-                                        userToken,
-                                        deleteAccountHandler);
                             } catch (IllegalArgumentException exception) {
                                 AppLog.add(Type.ACCOUNT, "Error trying to make request " +
                                         "to delete account. Error: " + exception.getMessage());
-
+                                closeProgressDialogDeleteAccount();
                                 showDialogDeleteAccountError();
                             }
                         }
@@ -428,6 +434,28 @@ public class PreferencesFragment extends PreferenceFragmentCompat implements Use
             }
         });
         dialogDeleteAccount.show();
+    }
+
+    private void showDialogDeleteAccountNoConnectivity() {
+        FragmentActivity activity = getActivity();
+        if (activity == null) {
+            return;
+        }
+
+        AlertDialog dialogDeleteAccountConfirmation = new AlertDialog.Builder(
+                new ContextThemeWrapper(activity, R.style.Dialog))
+                .setTitle(R.string.error)
+                .setMessage(R.string.simperium_dialog_message_network)
+                .setPositiveButton(android.R.string.ok, new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface dialogInterface, int i) {
+                                dialogInterface.dismiss();
+                            }
+                        }
+                )
+                .create();
+
+        dialogDeleteAccountConfirmation.show();
     }
 
     private void showDialogDeleteAccountError() {

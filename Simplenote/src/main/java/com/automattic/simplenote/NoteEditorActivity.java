@@ -401,7 +401,7 @@ public class NoteEditorActivity extends ThemedAppCompatActivity {
         mViewPager.setPagingEnabled(false);
     }
 
-    private boolean isPreviewTabSelected() {
+    boolean isPreviewTabSelected() {
         return mNote != null && mNote.isMarkdownEnabled() && mViewPager != null && mViewPager.getCurrentItem() == INDEX_TAB_PREVIEW;
     }
 
@@ -414,6 +414,10 @@ public class NoteEditorActivity extends ThemedAppCompatActivity {
         if (mSearchMatchBar != null) {
             mSearchMatchBar.setVisibility(isVisible ? View.VISIBLE : View.GONE);
         }
+    }
+
+    public Integer getCurrentSearchMatchIndexLocation() {
+        return mSearchMatchIndexes[mSearchMatchIndex];
     }
 
     private void setUpSearchMatchBar(Intent intent) {
