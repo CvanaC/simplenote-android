@@ -33,9 +33,9 @@ android {
         if (project.hasProperty("versionName")) {
             versionName project.property("versionName")
         } else {
-            versionName "2.21"
+            versionName "2.22"
         }
-        versionCode 144
+        versionCode 146
         minSdkVersion 23
         targetSdkVersion 29
 
@@ -69,7 +69,7 @@ android {
 
 buildscript {
     dependencies {
-        classpath 'io.sentry:sentry-android-gradle-plugin:1.7.16'
+        classpath 'io.sentry:sentry-android-gradle-plugin:2.1.4'
     }
 
     repositories {
@@ -99,13 +99,15 @@ dependencies {
     testImplementation "org.jetbrains.kotlinx:kotlinx-coroutines-test:1.4.3"
     testImplementation "org.mockito.kotlin:mockito-kotlin:3.2.0"
 
+
+    // Support for JsonObjects in unit tests since they are used by BucketObjects
+    testImplementation 'org.json:json:20210307'
+
     // Fastlane screengrab for screenshots automation
     androidTestImplementation 'tools.fastlane:screengrab:2.0.0'
     // Automattic and WordPress dependencies
     implementation 'com.automattic:simperium:v1.0.0'
-    implementation('com.automattic:tracks:1.2') {
-        exclude group: "org.jetbrains", module: "annotations-java5"
-    }
+    implementation 'com.github.Automattic:Automattic-Tracks-Android:2.1.0'
     implementation 'org.wordpress:passcodelock:2.0.2'
 
     // Kotlin's coroutines
@@ -153,6 +155,12 @@ repositories {
     maven { url "https://maven.google.com" }
     maven { url "https://s3.amazonaws.com/repo.commonsware.com" }
     jcenter()
+    maven {
+        url 'https://jitpack.io'
+        content {
+            includeGroup "com.github.Automattic"
+        }
+    }
 }
 
 if(["storeFile", "storePassword", "keyAlias", "keyPassword"].count { !project.hasProperty(it) } == 0 ){
